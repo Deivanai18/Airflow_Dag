@@ -1,0 +1,89 @@
+from datetime import timedelta, datetime
+from airflow import DAG
+from airflow.operators.dummy_operator import DummyOperator
+from airflow.operators.python_operator import PythonOperator
+from airflow.operators.email_operator import EmailOperator
+default_args = {
+		'owner': 'Deiva',
+		'start_date': datetime(2023, 6, 19),
+		'retries': 3,
+		'retry_delay': timedelta(minutes=5)
+}
+
+dag=DAG('Spark Job',
+	default_args=default_args,
+	description='Timberland Stock Analysis',
+	start_date=datetime(2023, 6, 19),
+	schedule_interval='* * * * *',
+	catchup=False,
+	tags=['example']
+	)
+
+def spark_job():
+	from pyspark.sql import SparkSession
+	spark = SparkSession.builder \
+        		.master("local[1]") \
+        		.appName("PySpark 2") \
+        		.getOrCreate()
+	rdd = spark.sparkContext.textFile("/root/airflow/timberland_stock.csv")
+	df = spark.read.csv("/content/timberland_stock.csv",header = True)
+	df.printSchema()
+	df.head()
+	df.show()
+	df.createOrReplaceTempView("table")
+	df.printSchema()
+	df1 = spark.sql("select count (*) from table")
+	df1.write.csv('/root/airflow/outputfiles/df1.csv', mode='overwrite', header=True)
+#What day had the Peak High in Price?
+	df2 = spark.sql("select Date, high from table order by high desc")
+	df2.write.csv('/root/airflow/outputfiles/df2.csv', mode='overwrite', header=True)	
+#What is the mean of the Close column?
+	df3 = spark.sql("select mean(Close) from table")
+	df3.write.csv('/root/airflow/outputfiles/df3.csv', mode='overwrite', header=True)
+#What is the max and min of the Volume column?
+	df4 = spark.sql("select max(Volume) from table")
+	df4.write.csv('/root/airflow/outputfiles/df4.csv', mode='overwrite', header=True)
+	df5 = spark.sql("select min(Volume) from table")
+	df5.write.csv('/root/airflow/outputfiles/df5.csv', mode='overwrite', header=True)
+#How many days was the Close lower than 60 dollars?
+	df6 = spark.sql("select count(*) from table where close<60")
+	df6.write.csv('/root/airflow/outputfiles/df6.csv', mode='overwrite', header=True)
+#What percentage of the time was the High greater than 80 dollars ?
+	df7 = spark.sql("select count(*) as HIGH from table where high >80")
+	df7.show()
+	df8 = spark.sql("select count(*) as TOTAL from table")
+	df8.show()
+	df7.createOrReplaceTempView("a")
+	df8.createOrReplaceTempView("b")
+	df9 = spark.sql("select (h.HIGH/t.TOTAL)*100 as FINAL from a h join b t")
+	df9.write.csv('/root/airflow/outputfiles/df9.csv', mode='overwrite', header=True)
+#What is the Pearson correlation between High and Volume?
+	df10 = spark.sql("select corr(high,volume) from table")
+	df10.write.csv('/root/airflow/outputfiles/df10.csv', mode='overwrite', header=True)
+#What is the max High per year?
+	df11 = spark.sql("select year(date) as year, max(high) as high from table group by year order by high desc ")
+	df11.write.csv('/root/airflow/outputfiles/df11.csv', mode='overwrite', header=True)
+#What is the average Close for each Calendar Month?
+	df12 = spark.sql("select month(date) as month, avg(Close) as close from table group by month order by month")
+	df12.write.csv('/root/airflow/outputfiles/df12.csv', mode='overwrite', header=True)
+
+spark_job()
+
+def notification_mail():
+	
+	if (dag_run  = context.get("dag_run")):
+		 msg = "DAG ran successfully"
+    		subject = f"DAG {dag_run} has completed"
+	else:
+		msg = "DAG has failure"
+		subject = f"DAG {dag_run} has not completed"	
+   	 send_email(to='deivanaikannan1821@gmail.com', subject=subject, html_content=msg)
+
+
+start_task = DummyOperator(task_id='start_task',dag=dag)
+spark_job_task = PythonOperator(task_id='spark_job_task', python_callable=spark_job, dag=dag)
+end_task = DummyOperator(task_id='end_task', dag=dag)
+send_mail_task =  EmailOperator(task_id='send_mail_task', python_callable=notification_mail, dag=dag) 
+
+start_task >> spark_job_task >> end_task >> send_mail_task
+	
